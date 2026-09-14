@@ -51,10 +51,12 @@ export interface GroceryList {
   finishedAt?: number;
 }
 
-export interface StoresCache { zip: string; radius: number; stores: Store[]; at: number }
+export interface Center { lat: number; lng: number; label: string }
+export interface StoresCache { zip: string; address?: string; radius: number; stores: Store[]; at: number; center?: Center }
 
 export interface Profile {
   zip: string;
+  address: string;        // optional street address; when set, distances are measured from here
   radius: number;
   preferredStoreIds: string[];
   storesCache: StoresCache | null;

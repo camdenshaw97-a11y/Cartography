@@ -47,3 +47,6 @@ end; $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- Added: optional home address (stores are measured from here when set).
+alter table public.profiles add column if not exists address text;

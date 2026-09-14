@@ -1,6 +1,6 @@
 "use client";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { GroceryList, Item, Profile, Quote, Scope, Session, Store } from "@/lib/types";
+import type { Center, GroceryList, Item, Profile, Quote, Scope, Session, Store } from "@/lib/types";
 import { AISLE_ORDER, CATALOG, QUICK_ADD } from "@/lib/catalog";
 import { storeColor, storeInitials } from "@/lib/brand";
 import { aisleOf, itemQuotes, planByStore, planSingle, planTotalFor } from "@/lib/plan";
@@ -79,7 +79,7 @@ export default function App() {
       if (!all.includes(active)) all.unshift(active);
       if (!p.onboarded && all.some((l) => Object.keys(l.quotes || {}).length)) { p.onboarded = true; st.saveProfile(p).catch(() => {}); }
       setProfile(p); setLists(all); setList(active);
-      if (!p.zip) setSheet({ kind: "location", firstRun: true });
+      if (!p.zip && !p.address) setSheet({ kind: "location", firstRun: true });
     } catch (e) { console.warn(e); setErr("Couldn't load your account data."); setList(newList()); }
   }
 
@@ -94,7 +94,7 @@ export default function App() {
   }
 
   /* ---------- store scope ---------- */
-  const radiusStores = useMemo(() => { const c = profile.storesCache; if (!c || c.zip !== profile.zip) return []; return c.stores.filter((s) => s.distance == null || s.distance <= profile.radius); }, [profile]);
+  const radiusStores = useMemo(() => { const c = profile.storesCache; if (!c || c.zip !== profile.zip || (c.address ?? "") !== (profile.address ?? "")) return []; return c.stores.filter((s) => s.distance == null || s.distance <= profile.radius); }, [profile]);
   const activeStores = useMemo(() => { const chosen = radiusStores.filter((s) => profile.preferredStoreIds.includes(s.id)); return chosen.length ? chosen : radiusStores; }, [radiusStores, profile.preferredStoreIds]);
   const storesForScope = useCallback((sc: Scope) => (sc === "online" ? ONLINE_STORES : sc === "outside" ? outsideStores : activeStores), [activeStores, outsideStores]);
   const missingQuotes = useMemo(() => (list ? list.items.filter((it) => { const q = itemQuotes(list, it); const st = storesForScope(it.scope); return st.length > 0 && st.some((s) => !q[s.id]); }) : []), [list, storesForScope]);
@@ -108,13 +108,15 @@ export default function App() {
   }
   async function ensureStores(force = false): Promise<Profile | null> {
     const p = profileRef.current;
-    if (!p.zip) { setSheet({ kind: "location", firstRun: true }); return null; }
+    if (!p.zip && !p.address) { setSheet({ kind: "location", firstRun: true }); return null; }
     const c = p.storesCache;
-    if (!force && c && c.zip === p.zip && c.radius >= p.radius && Date.now() - c.at < 7 * 864e5) return p;
-    setBusy(`Finding grocery stores within ${p.radius} mi of ${p.zip}…`); setErr(null);
+    if (!force && c && c.zip === p.zip && (c.address ?? "") === (p.address ?? "") && c.radius >= p.radius && Date.now() - c.at < 7 * 864e5) return p;
+    setBusy(`Finding grocery stores within ${p.radius} mi of ${p.address ? "home" : p.zip}…`); setErr(null);
     try {
-      const { stores } = await api<{ stores: Store[] }>("/api/stores", { zip: p.zip, radius: p.radius });
-      const next: Profile = { ...p, storesCache: { zip: p.zip, radius: p.radius, stores, at: Date.now() }, preferredStoreIds: p.preferredStoreIds.filter((id) => stores.some((s) => s.id === id)) };
+      const res = await api<{ stores: Store[]; center: Center; zip: string; warning?: string }>("/api/stores", { zip: p.zip, address: p.address, radius: p.radius });
+      const stores = res.stores;
+      if (res.warning) showToast(res.warning);
+      const next: Profile = { ...p, zip: /^\d{5}$/.test(res.zip) ? res.zip : p.zip, storesCache: { zip: res.zip || p.zip, address: p.address, radius: p.radius, stores, at: Date.now(), center: res.center }, preferredStoreIds: p.preferredStoreIds.filter((id) => stores.some((s) => s.id === id)) };
       await saveProfile(next); return next;
     } catch (e) { setErr(e instanceof Error ? e.message : "Store lookup failed"); return null; }
     finally { setBusy(null); }
@@ -122,7 +124,7 @@ export default function App() {
   async function ensureOutside(): Promise<Store[] | null> {
     if (outsideStores.length) return outsideStores;
     const p = profileRef.current; setBusy(`Looking for stores beyond ${p.radius} mi…`);
-    try { const { stores } = await api<{ stores: Store[] }>("/api/stores", { zip: p.zip, radius: p.radius, outside: true }); setOutsideStores(stores); return stores; }
+    try { const { stores } = await api<{ stores: Store[] }>("/api/stores", { zip: p.zip, address: p.address, radius: p.radius, outside: true }); setOutsideStores(stores); return stores; }
     catch (e) { setErr(e instanceof Error ? e.message : "Store lookup failed"); return null; }
     finally { setBusy(null); }
   }
@@ -202,7 +204,7 @@ export default function App() {
   if (!session) return <Welcome onGuest={startGuest} onAuth={(m) => setSheet({ kind: "auth", mode: m })} sheet={renderSheet()} />;
   if (!list) return <div className="app"><div className="status"><span className="spin" />Loading your lists…</div></div>;
 
-  const subtitle = profile.zip ? `${profile.zip} · ${profile.radius} mi · ${activeStores.length || "—"} stores` : "Set your location";
+  const subtitle = profile.zip || profile.address ? `${profile.address ? "Home" : profile.zip} · ${profile.radius} mi · ${activeStores.length || "—"} stores` : "Set your location";
   const title = { list: list.name, plan: "Plan", stores: "Stores", saved: "Saved" }[tab];
   const n = list.items.length;
 
@@ -347,8 +349,8 @@ export default function App() {
       {onboarding && <Steps n={2} label="Choose your stores" />}
       {onboarding && all.length > 0 && <div className="cta"><div className="in"><button className="btn primary block" onClick={() => { setTab("list"); window.scrollTo({ top: 0 }); setTimeout(() => inputRef.current?.focus(), 50); }}>Continue<small>{usingPref ? `${pref.length} stores picked` : `using all ${all.length} stores`}</small><Icon name="chev" /></button></div></div>}
       <div className="group"><div className="hd"><span>Location</span></div><div className="card">
-        <button className="row tap" onClick={() => setSheet({ kind: "location" })}><span className="lead"><Icon name="pin" /></span><span className="body"><span className="t">{profile.zip ? `ZIP ${profile.zip}` : "Set ZIP code"}</span><span className="s">{profile.radius} mile radius</span></span><Icon name="chev" /></button>
-      </div><p className="ft">{session!.type === "user" ? "Changing the radius saves it as your default." : "Sign in to remember your radius across devices."}</p></div>
+        <button className="row tap" onClick={() => setSheet({ kind: "location" })}><span className="lead"><Icon name="pin" /></span><span className="body"><span className="t">{profile.address ? profile.address : profile.zip ? `ZIP ${profile.zip}` : "Set your location"}</span><span className="s">{profile.radius} mile radius{profile.address ? " · measured from home" : profile.zip ? " · from ZIP center" : ""}</span></span><Icon name="chev" /></button>
+      </div><p className="ft">{profile.address ? "Distances are from your home address. " : "Add your home address to sort stores by distance from your door. "}{session!.type === "user" ? "Changes save as your default." : "Sign in to remember this across devices."}</p></div>
       <div className="group"><div className="hd"><span>Stores in range</span>{all.length > 0 && <button className="act" onClick={() => ensureStores(true)}>Refresh</button>}</div>
         {busy ? <div className="card"><div className="status"><span className="spin" /><span>{busy}</span></div></div>
           : !all.length ? <div className="card"><div className="empty"><Icon name="store" /><h3>No stores loaded</h3><p>{profile.zip ? `Find grocery stores near ${profile.zip}.` : "Set your ZIP code first."}</p>{profile.zip && <button className="btn primary" onClick={() => ensureStores(true)}><Icon name="search" />Find Stores</button>}</div></div>
@@ -383,10 +385,10 @@ export default function App() {
   function renderSheet() {
     if (!sheet) return null;
     switch (sheet.kind) {
-      case "location": return <LocationSheet firstRun={!!sheet.firstRun} profile={profile} isUser={session?.type === "user"} onClose={() => setSheet(null)} onSave={async (zip, radius) => {
-        const p = profileRef.current; const changed = zip !== p.zip || radius !== p.radius;
-        const next = { ...p, zip, radius }; await saveProfile(next); setSheet(null);
-        if (changed || !next.storesCache) { setTab("stores"); setTimeout(() => ensureStores(zip !== p.zip || (!!next.storesCache && radius > next.storesCache.radius)), 0); }
+      case "location": return <LocationSheet firstRun={!!sheet.firstRun} profile={profile} isUser={session?.type === "user"} onClose={() => setSheet(null)} onSave={async (zip, address, radius) => {
+        const p = profileRef.current; const changed = zip !== p.zip || address !== (p.address ?? "") || radius !== p.radius;
+        const next = { ...p, zip, address, radius }; await saveProfile(next); setSheet(null);
+        if (changed || !next.storesCache) { setTab("stores"); setTimeout(() => ensureStores(zip !== p.zip || address !== (p.address ?? "") || (!!next.storesCache && radius > next.storesCache.radius)), 0); }
       }} />;
       case "item": { const it = list?.items.find((i) => i.id === sheet.id); if (!it) return null; return <ItemSheet it={it} list={list!} radius={profile.radius} stores={storesForScope} onClose={() => setSheet(null)}
         onSave={(patch) => { saveList({ ...list!, items: list!.items.map((i) => (i.id === it.id ? { ...i, ...patch } : i)) }); setSheet(null); }}
@@ -453,12 +455,18 @@ function Welcome({ onGuest, onAuth, sheet }: { onGuest: () => void; onAuth: (m: 
   </div>;
 }
 
-function LocationSheet({ firstRun, profile, isUser, onClose, onSave }: { firstRun: boolean; profile: Profile; isUser: boolean; onClose: () => void; onSave: (zip: string, radius: number) => Promise<void> }) {
-  const [zip, setZip] = useState(profile.zip); const [radius, setRadius] = useState(profile.radius); const [msg, setMsg] = useState("");
+function LocationSheet({ firstRun, profile, isUser, onClose, onSave }: { firstRun: boolean; profile: Profile; isUser: boolean; onClose: () => void; onSave: (zip: string, address: string, radius: number) => Promise<void> }) {
+  const [zip, setZip] = useState(profile.zip); const [address, setAddress] = useState(profile.address ?? ""); const [radius, setRadius] = useState(profile.radius); const [msg, setMsg] = useState("");
   const setR = (r: number) => setRadius(clamp(r, 1, 50));
-  return <Sheet title="Location" cancelLabel={firstRun ? "Later" : "Cancel"} doneLabel="Save" onClose={onClose} onDone={async () => { if (!/^\d{5}$/.test(zip.trim())) { setMsg("Enter a 5-digit ZIP code."); return false; } await onSave(zip.trim(), radius); }}>
-    {firstRun && <div className="steps"><span className="dots"><i className="on" /><i /><i /></span><span>Step 1 of 3 · Where do you shop?</span></div>}
-    <div className="group"><div className="field-lbl">ZIP code</div><input id="zipIn" className="textin num" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} placeholder="92019" value={zip} onChange={(e) => { setZip(e.target.value.replace(/\D/g, "")); setMsg(""); }} aria-label="ZIP code" autoFocus />{msg && <div className="err">{msg}</div>}<p className="note">Stores are found around this ZIP&apos;s center.</p></div>
+  return <Sheet title="Location" cancelLabel={firstRun ? "Later" : "Cancel"} doneLabel="Save" onClose={onClose} onDone={async () => {
+    const a = address.trim(); const z = zip.trim();
+    if (!a && !/^\d{5}$/.test(z)) { setMsg("Enter your home address or a 5-digit ZIP code."); return false; }
+    if (z && !/^\d{5}$/.test(z)) { setMsg("ZIP code should be 5 digits."); return false; }
+    await onSave(z, a, radius);
+  }}>
+    {firstRun && <div className="steps"><span className="dots"><i className="on" /><i /><i /></span><span>Step 1 of 3 · Where do you shop from?</span></div>}
+    <div className="group"><div className="field-lbl">Home address</div><input id="addrIn" className="textin" type="text" autoComplete="street-address" placeholder="123 Jamacha Rd, El Cajon, CA" value={address} onChange={(e) => { setAddress(e.target.value); setMsg(""); }} aria-label="Home address" autoFocus /><p className="note">Optional. With an address, every store is measured from your door and sorted nearest first. Kept private to your account.</p></div>
+    <div className="group"><div className="field-lbl">ZIP code</div><input id="zipIn" className="textin num" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} placeholder="92019" value={zip} onChange={(e) => { setZip(e.target.value.replace(/\D/g, "")); setMsg(""); }} aria-label="ZIP code" />{msg && <div className="err">{msg}</div>}<p className="note">{address.trim() ? "Filled in from your address if left blank." : "Without an address, stores are found around this ZIP's center."}</p></div>
     <div className="group"><div className="field-lbl">Radius</div><div className="card"><div className="row"><span className="body"><span className="t">Distance</span><span className="s">Any grocery store this far is considered</span></span><span className="stepper"><button type="button" aria-label="Smaller radius" onClick={() => setR(radius - (radius > 15 ? 5 : 1))}><Icon name="minus" /></button><span className="n num">{radius} mi</span><button type="button" aria-label="Larger radius" onClick={() => setR(radius + (radius >= 15 ? 5 : 1))}><Icon name="plus" /></button></span></div></div>
       <div className="seg">{[5, 10, 15, 25].map((r) => <button key={r} type="button" className={radius === r ? "on" : ""} onClick={() => setR(r)}>{r} mi</button>)}</div>
       <p className="note">{isUser ? "Saved as your default radius." : "Default is 10 miles. An account remembers your choice."}</p></div>

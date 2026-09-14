@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { geocodeZip, searchGroceryStores } from "@/lib/foursquare";
+import { searchGroceryStores } from "@/lib/foursquare";
+import { geocodeAddress, geocodeZip } from "@/lib/geocode";
 import { krogerChainFor, krogerConfigured, krogerLocations } from "@/lib/kroger";
-import type { Store } from "@/lib/types";
+import type { Center, Store } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -12,19 +13,35 @@ function haversineMi(a: { lat: number; lng: number }, b: { lat: number; lng: num
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-/** POST { zip, radius, outside? } → { stores, center } */
+/**
+ * POST { zip, address?, radius, outside? } → { stores, center, zip }
+ * When `address` is given it is geocoded and used as the center (so distances are from the user's door);
+ * otherwise the ZIP's center point is used. If the address can't be matched, we fall back to the ZIP and say so.
+ */
 export async function POST(req: Request) {
   try {
-    const { zip, radius = 10, outside = false } = await req.json();
-    if (!/^\d{5}$/.test(String(zip))) return NextResponse.json({ error: "Enter a 5-digit ZIP code." }, { status: 400 });
-    const r = Math.min(50, Math.max(1, Number(radius) || 10));
-    const center = await geocodeZip(String(zip));
+    const body = await req.json();
+    const address = String(body.address ?? "").trim();
+    let zip = String(body.zip ?? "").trim();
+    const r = Math.min(50, Math.max(1, Number(body.radius) || 10));
+    const outside = !!body.outside;
+
+    let center: Center | null = null; let usedAddress = false;
+    if (address) {
+      const g = await geocodeAddress(address);
+      if (g) { center = { lat: g.lat, lng: g.lng, label: g.label }; usedAddress = true; if (g.zip && !/^\d{5}$/.test(zip)) zip = g.zip; }
+    }
+    if (!center) {
+      if (!/^\d{5}$/.test(zip)) return NextResponse.json({ error: address ? "Couldn't find that address. Check the street and city, or enter a ZIP code." : "Enter a 5-digit ZIP code." }, { status: 400 });
+      const z = await geocodeZip(zip); center = { lat: z.lat, lng: z.lng, label: z.label };
+    }
+
     const stores: Store[] = await searchGroceryStores(outside ? { ...center, radiusMiles: r + 25, minMiles: r } : { ...center, radiusMiles: r });
 
     // Attach Kroger location IDs to Kroger-banner stores so /api/prices can fetch real prices.
-    if (krogerConfigured() && stores.some((s) => krogerChainFor(s.chain))) {
+    if (krogerConfigured() && /^\d{5}$/.test(zip) && stores.some((s) => krogerChainFor(s.chain))) {
       try {
-        const kl = await krogerLocations(String(zip), outside ? r + 25 : r);
+        const kl = await krogerLocations(zip, outside ? r + 25 : r);
         for (const s of stores) {
           const chain = krogerChainFor(s.chain); if (!chain || s.lat == null || s.lng == null) continue;
           const cands = kl.filter((l) => l.chain.toUpperCase() === chain);
@@ -34,7 +51,7 @@ export async function POST(req: Request) {
         }
       } catch (e) { console.warn("Kroger locations failed", e); }
     }
-    return NextResponse.json({ stores, center });
+    return NextResponse.json({ stores, center, zip, usedAddress, warning: address && !usedAddress ? "Couldn't match that address — showing distances from the ZIP center instead." : undefined });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Store lookup failed";
     return NextResponse.json({ error: msg }, { status: 500 });

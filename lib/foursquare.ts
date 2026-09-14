@@ -1,21 +1,12 @@
 import type { Store, StoreType } from "./types";
+export { geocodeZip } from "./geocode";
 
 const FSQ_URL = "https://places-api.foursquare.com/places/search";
 const FSQ_VERSION = "2025-06-17";
 
-/** ZIP → lat/lng using the free Zippopotam service (no key). */
-export async function geocodeZip(zip: string): Promise<{ lat: number; lng: number; city: string; state: string }> {
-  const r = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`, { next: { revalidate: 86400 * 30 } });
-  if (!r.ok) throw new Error(`Unknown ZIP ${zip}`);
-  const j = await r.json();
-  const p = j.places?.[0];
-  if (!p) throw new Error(`Unknown ZIP ${zip}`);
-  return { lat: parseFloat(p.latitude), lng: parseFloat(p.longitude), city: p["place name"], state: p["state abbreviation"] };
-}
-
-const GROCERY_WORDS = /grocery|supermarket|warehouse|big box|department|health food|organic|natural food|discount store|superstore|hypermarket|farmers market|food market|market/i;
-const EXCLUDE_WORDS = /convenience|gas station|liquor|smoke|vape|pharmacy$|drugstore|restaurant|cafe|coffee|bakery|deli$|butcher|fast food|pet store|dollar/i;
-const EXCLUDE_NAMES = /7-eleven|circle k|am\/?pm|chevron|shell|arco|cvs|walgreens|rite aid|dollar tree|dollar general|family dollar|99 cents/i;
+const GROCERY_WORDS = /grocery|supermarket|warehouse store|wholesale|big box|department store|superstore|hypermarket|health food|organic grocery|natural food|discount store|food and beverage retail/i;
+const EXCLUDE_WORDS = /convenience|gas station|liquor|smoke|vape|pharmacy|drugstore|restaurant|cafe|coffee|bakery|deli|butcher|fast food|taco|mexican|pizza|pet store|dollar|fitness|gym|supplement|nutrition|vitamin|cannabis|dispensary|clothing|furniture|hardware|home improvement|electronics|beauty|salon/i;
+const EXCLUDE_NAMES = /7-eleven|circle k|am\/?pm|chevron|shell|arco|cvs|walgreens|rite aid|dollar tree|dollar general|family dollar|99 cents|tortilleria|taqueria|panaderia|carniceria|pro body|gnc|vitamin shoppe|home depot|lowe's|best buy|ross|marshalls|tj maxx|big lots/i;
 
 function classify(name: string, cats: string[]): StoreType {
   const n = name.toLowerCase();
@@ -27,10 +18,10 @@ function classify(name: string, cats: string[]): StoreType {
 }
 
 /** Derive a chain name from a venue name: "Vons" from "Vons – Jamacha Rd", "Walmart" from "Walmart Supercenter". */
+const KNOWN_CHAINS = ["Walmart", "Target", "Costco", "Vons", "Ralphs", "Albertsons", "Safeway", "Kroger", "Trader Joe's", "Whole Foods", "Sprouts", "Smart & Final", "Grocery Outlet", "Stater Bros", "Food 4 Less", "Aldi", "Sam's Club", "WinCo", "99 Ranch", "H Mart", "Northgate", "Cardenas", "El Super", "Vallarta", "Pavilions", "Gelson's", "Bristol Farms", "Erewhon", "Lazy Acres", "Jimbo's", "Barons", "Sprouts", "Fred Meyer", "King Soopers", "Fry's", "Smith's", "QFC", "Dillons", "Publix", "H-E-B", "Wegmans", "Meijer", "Hy-Vee", "Giant", "Stop & Shop", "ShopRite", "Lidl", "Food Lion", "Harris Teeter", "Smart & Final", "Stater Bros", "Northgate", "Food 4 Less"];
 export function chainOf(name: string): string {
   const n = name.replace(/\s+#?\d+$/, "").trim();
-  const known = ["Walmart", "Target", "Costco", "Vons", "Ralphs", "Albertsons", "Safeway", "Kroger", "Trader Joe's", "Whole Foods", "Sprouts", "Smart & Final", "Grocery Outlet", "Stater Bros", "Food 4 Less", "Aldi", "Sam's Club", "WinCo", "99 Ranch", "H Mart", "Northgate", "Cardenas", "El Super", "Vallarta", "Pavilions", "Gelson's", "Bristol Farms", "Erewhon", "Lazy Acres", "Jimbo's", "Barons", "Sprouts", "Fred Meyer", "King Soopers", "Fry's", "Smith's", "QFC", "Dillons", "Publix", "H-E-B", "Wegmans", "Meijer", "Hy-Vee", "Giant", "Stop & Shop", "ShopRite", "Lidl", "Food Lion", "Harris Teeter"];
-  const hit = known.find((k) => n.toLowerCase().startsWith(k.toLowerCase()));
+  const hit = KNOWN_CHAINS.find((k) => n.toLowerCase().startsWith(k.toLowerCase()));
   if (hit) return hit;
   return n.split(/[–\-|(]/)[0].trim().split(" ").slice(0, 2).join(" ");
 }
@@ -53,8 +44,10 @@ export async function searchGroceryStores(opts: { lat: number; lng: number; radi
       const cats: string[] = (p.categories ?? []).map((c: { name?: string }) => c.name ?? "");
       const name: string = p.name ?? "";
       if (EXCLUDE_NAMES.test(name)) continue;
-      if (!cats.some((c) => GROCERY_WORDS.test(c)) && !/grocery|market|supermarket|foods?$/i.test(name)) continue;
-      if (cats.some((c) => EXCLUDE_WORDS.test(c)) && !cats.some((c) => /grocery|supermarket/i.test(c))) continue;
+      const isGroceryCat = cats.some((c) => GROCERY_WORDS.test(c));
+      const isKnownChain = KNOWN_CHAINS.some((k) => name.toLowerCase().startsWith(k.toLowerCase()));
+      if (!isGroceryCat && !isKnownChain) continue;
+      if (cats.some((c) => EXCLUDE_WORDS.test(c)) && !isKnownChain && !cats.some((c) => /^grocery store$|^supermarket$/i.test(c))) continue;
       const dist = typeof p.distance === "number" ? miles(p.distance) : null;
       if (opts.minMiles && dist != null && dist < opts.minMiles) continue;
       const loc = p.location ?? {};
