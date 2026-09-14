@@ -27,13 +27,13 @@ export function remoteStorage(session: Session): Storage {
   const sb = supabase()!; const uid = session.id;
   return {
     async loadProfile() {
-      const { data, error } = await sb.from("profiles").select("zip,address,radius_miles,preferred_store_ids,stores_cache,onboarded").eq("id", uid).maybeSingle();
+      const { data, error } = await sb.from("profiles").select("zip,address,home,radius_miles,preferred_store_ids,stores_cache,onboarded").eq("id", uid).maybeSingle();
       if (error) throw error;
       if (!data) { await sb.from("profiles").upsert({ id: uid, display_name: session.name }); return { ...EMPTY_PROFILE }; }
-      return { zip: data.zip ?? "", address: data.address ?? "", radius: data.radius_miles ?? 10, preferredStoreIds: data.preferred_store_ids ?? [], storesCache: data.stores_cache ?? null, onboarded: !!data.onboarded };
+      return { zip: data.zip ?? "", address: data.address ?? "", home: data.home ?? null, radius: data.radius_miles ?? 10, preferredStoreIds: data.preferred_store_ids ?? [], storesCache: data.stores_cache ?? null, onboarded: !!data.onboarded };
     },
     async saveProfile(p) {
-      const { error } = await sb.from("profiles").upsert({ id: uid, zip: p.zip, address: p.address || null, radius_miles: p.radius, preferred_store_ids: p.preferredStoreIds, stores_cache: p.storesCache, onboarded: p.onboarded, updated_at: new Date().toISOString() });
+      const { error } = await sb.from("profiles").upsert({ id: uid, zip: p.zip, address: p.address || null, home: p.home ?? null, radius_miles: p.radius, preferred_store_ids: p.preferredStoreIds, stores_cache: p.storesCache, onboarded: p.onboarded, updated_at: new Date().toISOString() });
       if (error) throw error;
     },
     async loadLists() {

@@ -57,6 +57,7 @@ export interface StoresCache { zip: string; address?: string; radius: number; st
 export interface Profile {
   zip: string;
   address: string;        // optional street address; when set, distances are measured from here
+  home?: Center | null;   // coordinates for `address` (from the suggestion picked), used directly when present
   radius: number;
   preferredStoreIds: string[];
   storesCache: StoresCache | null;

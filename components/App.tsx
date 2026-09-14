@@ -113,7 +113,7 @@ export default function App() {
     if (!force && c && c.zip === p.zip && (c.address ?? "") === (p.address ?? "") && c.radius >= p.radius && Date.now() - c.at < 7 * 864e5) return p;
     setBusy(`Finding grocery stores within ${p.radius} mi of ${p.address ? "home" : p.zip}…`); setErr(null);
     try {
-      const res = await api<{ stores: Store[]; center: Center; zip: string; warning?: string }>("/api/stores", { zip: p.zip, address: p.address, radius: p.radius });
+      const res = await api<{ stores: Store[]; center: Center; zip: string; warning?: string }>("/api/stores", { zip: p.zip, address: p.address, home: p.home ?? null, radius: p.radius });
       const stores = res.stores;
       if (res.warning) showToast(res.warning);
       const next: Profile = { ...p, zip: /^\d{5}$/.test(res.zip) ? res.zip : p.zip, storesCache: { zip: res.zip || p.zip, address: p.address, radius: p.radius, stores, at: Date.now(), center: res.center }, preferredStoreIds: p.preferredStoreIds.filter((id) => stores.some((s) => s.id === id)) };
@@ -124,7 +124,7 @@ export default function App() {
   async function ensureOutside(): Promise<Store[] | null> {
     if (outsideStores.length) return outsideStores;
     const p = profileRef.current; setBusy(`Looking for stores beyond ${p.radius} mi…`);
-    try { const { stores } = await api<{ stores: Store[] }>("/api/stores", { zip: p.zip, address: p.address, radius: p.radius, outside: true }); setOutsideStores(stores); return stores; }
+    try { const { stores } = await api<{ stores: Store[] }>("/api/stores", { zip: p.zip, address: p.address, home: p.home ?? null, radius: p.radius, outside: true }); setOutsideStores(stores); return stores; }
     catch (e) { setErr(e instanceof Error ? e.message : "Store lookup failed"); return null; }
     finally { setBusy(null); }
   }
@@ -385,9 +385,9 @@ export default function App() {
   function renderSheet() {
     if (!sheet) return null;
     switch (sheet.kind) {
-      case "location": return <LocationSheet firstRun={!!sheet.firstRun} profile={profile} isUser={session?.type === "user"} onClose={() => setSheet(null)} onSave={async (zip, address, radius) => {
+      case "location": return <LocationSheet firstRun={!!sheet.firstRun} profile={profile} isUser={session?.type === "user"} onClose={() => setSheet(null)} onSave={async (zip, address, radius, home) => {
         const p = profileRef.current; const changed = zip !== p.zip || address !== (p.address ?? "") || radius !== p.radius;
-        const next = { ...p, zip, address, radius }; await saveProfile(next); setSheet(null);
+        const next = { ...p, zip, address, radius, home: address ? home ?? (address === p.address ? p.home ?? null : null) : null }; await saveProfile(next); setSheet(null);
         if (changed || !next.storesCache) { setTab("stores"); setTimeout(() => ensureStores(zip !== p.zip || address !== (p.address ?? "") || (!!next.storesCache && radius > next.storesCache.radius)), 0); }
       }} />;
       case "item": { const it = list?.items.find((i) => i.id === sheet.id); if (!it) return null; return <ItemSheet it={it} list={list!} radius={profile.radius} stores={storesForScope} onClose={() => setSheet(null)}
@@ -455,17 +455,38 @@ function Welcome({ onGuest, onAuth, sheet }: { onGuest: () => void; onAuth: (m: 
   </div>;
 }
 
-function LocationSheet({ firstRun, profile, isUser, onClose, onSave }: { firstRun: boolean; profile: Profile; isUser: boolean; onClose: () => void; onSave: (zip: string, address: string, radius: number) => Promise<void> }) {
+function LocationSheet({ firstRun, profile, isUser, onClose, onSave }: { firstRun: boolean; profile: Profile; isUser: boolean; onClose: () => void; onSave: (zip: string, address: string, radius: number, home: Center | null) => Promise<void> }) {
   const [zip, setZip] = useState(profile.zip); const [address, setAddress] = useState(profile.address ?? ""); const [radius, setRadius] = useState(profile.radius); const [msg, setMsg] = useState("");
+  const [home, setHome] = useState<Center | null>(profile.home ?? null);
+  const [sugg, setSugg] = useState<{ label: string; zip: string; lat: number; lng: number }[]>([]);
+  const [open, setOpen] = useState(false);
+  const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const bias = profile.storesCache?.center;
+  useEffect(() => {
+    clearTimeout(debounce.current);
+    const q = address.trim();
+    if (q.length < 4 || (home && home.label === q)) { setSugg([]); return; }
+    debounce.current = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q }); if (bias) { params.set("lat", String(bias.lat)); params.set("lng", String(bias.lng)); }
+        const r = await fetch(`/api/geocode?${params}`); const j = await r.json(); setSugg(j.suggestions ?? []); setOpen(true);
+      } catch { setSugg([]); }
+    }, 250);
+    return () => clearTimeout(debounce.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address]);
+  function pick(sg: { label: string; zip: string; lat: number; lng: number }) { setAddress(sg.label); setHome({ lat: sg.lat, lng: sg.lng, label: sg.label }); if (sg.zip) setZip(sg.zip); setSugg([]); setOpen(false); setMsg(""); }
   const setR = (r: number) => setRadius(clamp(r, 1, 50));
   return <Sheet title="Location" cancelLabel={firstRun ? "Later" : "Cancel"} doneLabel="Save" onClose={onClose} onDone={async () => {
     const a = address.trim(); const z = zip.trim();
     if (!a && !/^\d{5}$/.test(z)) { setMsg("Enter your home address or a 5-digit ZIP code."); return false; }
     if (z && !/^\d{5}$/.test(z)) { setMsg("ZIP code should be 5 digits."); return false; }
-    await onSave(z, a, radius);
+    await onSave(z, a, radius, home && home.label === a ? home : null);
   }}>
     {firstRun && <div className="steps"><span className="dots"><i className="on" /><i /><i /></span><span>Step 1 of 3 · Where do you shop from?</span></div>}
-    <div className="group"><div className="field-lbl">Home address</div><input id="addrIn" className="textin" type="text" autoComplete="street-address" placeholder="123 Jamacha Rd, El Cajon, CA" value={address} onChange={(e) => { setAddress(e.target.value); setMsg(""); }} aria-label="Home address" autoFocus /><p className="note">Optional. With an address, every store is measured from your door and sorted nearest first. Kept private to your account.</p></div>
+    <div className="group"><div className="field-lbl">Home address</div><div style={{ position: "relative" }}><input id="addrIn" className="textin" type="text" autoComplete="off" placeholder="123 Jamacha Rd, El Cajon, CA" value={address} onChange={(e) => { setAddress(e.target.value); setHome(null); setMsg(""); }} onFocus={() => sugg.length && setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} aria-label="Home address" aria-autocomplete="list" aria-expanded={open && sugg.length > 0} autoFocus />
+      {open && sugg.length > 0 && <div className="suggest" role="listbox" style={{ position: "absolute", left: 0, right: 0, zIndex: 5 }}>{sugg.map((sg) => <button key={sg.label} type="button" role="option" aria-selected={false} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(sg)}><Icon name="pin" /><span>{sg.label}</span></button>)}</div>}</div>
+    {home && home.label === address.trim() && <p className="note" style={{ color: "var(--accent)" }}>Location pinned from the suggestion.</p>}<p className="note">Optional. With an address, every store is measured from your door and sorted nearest first. Kept private to your account.</p></div>
     <div className="group"><div className="field-lbl">ZIP code</div><input id="zipIn" className="textin num" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} placeholder="92019" value={zip} onChange={(e) => { setZip(e.target.value.replace(/\D/g, "")); setMsg(""); }} aria-label="ZIP code" />{msg && <div className="err">{msg}</div>}<p className="note">{address.trim() ? "Filled in from your address if left blank." : "Without an address, stores are found around this ZIP's center."}</p></div>
     <div className="group"><div className="field-lbl">Radius</div><div className="card"><div className="row"><span className="body"><span className="t">Distance</span><span className="s">Any grocery store this far is considered</span></span><span className="stepper"><button type="button" aria-label="Smaller radius" onClick={() => setR(radius - (radius > 15 ? 5 : 1))}><Icon name="minus" /></button><span className="n num">{radius} mi</span><button type="button" aria-label="Larger radius" onClick={() => setR(radius + (radius >= 15 ? 5 : 1))}><Icon name="plus" /></button></span></div></div>
       <div className="seg">{[5, 10, 15, 25].map((r) => <button key={r} type="button" className={radius === r ? "on" : ""} onClick={() => setR(r)}>{r} mi</button>)}</div>

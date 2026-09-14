@@ -27,7 +27,9 @@ export async function POST(req: Request) {
     const outside = !!body.outside;
 
     let center: Center | null = null; let usedAddress = false;
-    if (address) {
+    const home = body.home as Center | null | undefined;
+    if (address && home && Number.isFinite(home.lat) && Number.isFinite(home.lng)) { center = { lat: home.lat, lng: home.lng, label: home.label || address }; usedAddress = true; }
+    if (address && !center) {
       const g = await geocodeAddress(address);
       if (g) { center = { lat: g.lat, lng: g.lng, label: g.label }; usedAddress = true; if (g.zip && !/^\d{5}$/.test(zip)) zip = g.zip; }
     }

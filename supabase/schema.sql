@@ -50,3 +50,4 @@ create trigger on_auth_user_created after insert on auth.users
 
 -- Added: optional home address (stores are measured from here when set).
 alter table public.profiles add column if not exists address text;
+alter table public.profiles add column if not exists home jsonb;
